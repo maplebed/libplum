@@ -31,9 +31,9 @@ type plumHouse struct {
 	events chan libplumraw.Event
 	conn   libplumraw.WebConnection
 
-	Rooms Rooms
-	Loads LogicalLoads
-	Pads  Lightpads
+	Rooms []*plumRoom
+	Loads []*plumLogicalLoad
+	Pads  []*plumLightpad
 
 	triggers []TriggerFn
 	tLock    sync.Mutex
@@ -59,12 +59,15 @@ func (h *plumHouse) SetCreds(a *Account) {
 
 // LoadState loads a previously serialized state
 func (h *plumHouse) LoadState(serialized []byte) error {
-	fmt.Println(string(serialized))
 	err := json.Unmarshal(serialized, h)
 	if err != nil {
 		return err
 	}
-	h.conn = &libplumraw.DefaultWebConnection{}
+	conf := libplumraw.WebConnectionConfig{
+		Email:    h.Creds.Email,
+		Password: h.Creds.Password,
+	}
+	h.conn = libplumraw.NewWebConnection(conf)
 	return nil
 }
 
@@ -86,40 +89,19 @@ func updater(forUpdate chan updatable) {
 	}
 }
 
-func (h *plumHouse) updateByID(id string) {
-	for _, room := range h.Rooms {
-		if room.(*plumRoom).ID == id {
-			h.update <- room
-			return
-		}
-	}
-	for _, load := range h.Loads {
-		if load.(*plumLogicalLoad).ID == id {
-			h.update <- load
-			return
-		}
-	}
-	for _, pad := range h.Pads {
-		if pad.(*plumLightpad).ID == id {
-			h.update <- pad
-			return
-		}
-	}
-}
-
 func (h *plumHouse) getByID(id string) idable {
 	for _, room := range h.Rooms {
-		if room.(*plumRoom).ID == id {
+		if room.ID == id {
 			return room
 		}
 	}
 	for _, load := range h.Loads {
-		if load.(*plumLogicalLoad).ID == id {
+		if load.ID == id {
 			return load
 		}
 	}
 	for _, pad := range h.Pads {
-		if pad.(*plumLightpad).ID == id {
+		if pad.ID == id {
 			return pad
 		}
 	}
@@ -152,9 +134,15 @@ func (h *plumHouse) Initialize() error {
 		}
 		h.ID = houses[0]
 	}
-	h.Rooms = make(Rooms, 0, len(h.RoomIDs))
-	h.Loads = make(LogicalLoads, 0, 0)
-	h.Pads = make(Lightpads, 0, 0)
+	if h.Rooms == nil {
+		h.Rooms = make([]*plumRoom, 0, len(h.RoomIDs))
+	}
+	if h.Loads == nil {
+		h.Loads = make([]*plumLogicalLoad, 0, 0)
+	}
+	if h.Pads == nil {
+		h.Pads = make([]*plumLightpad, 0, 0)
+	}
 
 	err := h.Update()
 	if err != nil {
@@ -214,23 +202,27 @@ func (h *plumHouse) Update() error {
 		return err
 	}
 	for _, rid := range newHouseState.RoomIDs {
-		room, _ := h.GetRoomByID(rid)
-		if room != nil {
+		r, _ := h.GetRoomByID(rid)
+		if r != nil {
+			r.(*plumRoom).house = h
 			continue
 		}
-		room = &plumRoom{}
-		room.(*plumRoom).ID = rid
-		room.(*plumRoom).house = h
+		room := &plumRoom{}
+		room.ID = rid
+		room.house = h
 		h.Rooms = append(h.Rooms, room)
 	}
 	for _, room := range h.Rooms {
+		room.house = h
 		h.update <- room
 	}
 	for _, load := range h.Loads {
+		load.house = h
 		h.update <- load
 	}
 	for _, pad := range h.Pads {
-		pad.(*plumLightpad).HAT = h.AccessToken
+		pad.house = h
+		pad.HAT = h.AccessToken
 		h.update <- pad
 	}
 	// TODO update scenes
@@ -247,7 +239,7 @@ func (h *plumHouse) Update() error {
 // func unique(pads Lightpads) Lightpads {
 // 	padmap := make(map[string]Lightpad, 0)
 // 	for _, pad := range pads {
-// 		padmap[pad.(*plumLightpad).ID] = pad
+// 		padmap[pad.ID] = pad
 // 	}
 // 	newPads := make(Lightpads, 0, len(padmap))
 // 	for _, pad := range padmap {
@@ -291,7 +283,7 @@ func (h *plumHouse) Listen() {
 					logrus.WithField("beat", beat).WithField("error", err).Debug("creating new lightpad")
 					pad = &plumLightpad{}
 					pad.(*plumLightpad).ID = beat.ID
-					h.Pads = append(h.Pads, pad)
+					h.Pads = append(h.Pads, pad.(*plumLightpad))
 				}
 				pad.(*plumLightpad).IP = beat.IP
 				pad.(*plumLightpad).Port = beat.Port
@@ -318,12 +310,12 @@ func (h *plumHouse) Scan() {
 	return
 }
 
-func (h *plumHouse) GetRooms() []Room {
-	return h.Rooms
-}
+// func (h *plumHouse) GetRooms() []Room {
+// 	return h.Rooms
+// }
 func (h *plumHouse) GetRoomByName(name string) (Room, error) {
 	for _, room := range h.Rooms {
-		if room.(*plumRoom).Name == name {
+		if room.Name == name {
 			return room, nil
 		}
 	}
@@ -331,7 +323,7 @@ func (h *plumHouse) GetRoomByName(name string) (Room, error) {
 }
 func (h *plumHouse) GetRoomByID(id string) (Room, error) {
 	for _, room := range h.Rooms {
-		if room.(*plumRoom).ID == id {
+		if room.ID == id {
 			return room, nil
 		}
 	}
@@ -348,12 +340,12 @@ func (h *plumHouse) GetSceneByID(string) (Scene, error) {
 	return nil, &ENotFound{"scene"}
 }
 
-func (h *plumHouse) GetLoads() []LogicalLoad {
-	return h.Loads
-}
+// func (h *plumHouse) GetLoads() []LogicalLoad {
+// 	return []LogicalLoad(h.Loads)
+// }
 func (h *plumHouse) GetLoadByName(name string) (LogicalLoad, error) {
 	for _, load := range h.Loads {
-		if load.(*plumLogicalLoad).Name == name {
+		if load.Name == name {
 			return load, nil
 		}
 	}
@@ -361,7 +353,7 @@ func (h *plumHouse) GetLoadByName(name string) (LogicalLoad, error) {
 }
 func (h *plumHouse) GetLoadByID(id string) (LogicalLoad, error) {
 	for _, load := range h.Loads {
-		if load.(*plumLogicalLoad).ID == id {
+		if load.ID == id {
 			return load, nil
 		}
 	}
@@ -374,7 +366,7 @@ func (h *plumHouse) GetStream() chan StreamEvent {
 
 type plumRoom struct {
 	libplumraw.Room
-	house House
+	house *plumHouse
 	loads LogicalLoads
 }
 
@@ -387,20 +379,21 @@ func (r *plumRoom) GetID() string {
 
 func (r *plumRoom) Update() error {
 	logrus.WithField("room_id", r.ID).Debug("getting room")
-	newRoomState, err := r.house.(*plumHouse).conn.GetRoom(r.ID)
+	newRoomState, err := r.house.conn.GetRoom(r.ID)
 	if err != nil {
 		return err
 	}
 	for _, llid := range newRoomState.LLIDs {
-		load, _ := r.house.(*plumHouse).GetLoadByID(llid)
-		if load != nil {
+		l, _ := r.house.GetLoadByID(llid)
+		if l != nil {
+			l.(*plumLogicalLoad).house = r.house
 			continue
 		}
-		load = &plumLogicalLoad{}
-		load.(*plumLogicalLoad).ID = llid
-		load.(*plumLogicalLoad).house = r.house
-		r.house.(*plumHouse).Loads = append(r.house.(*plumHouse).Loads, load)
-		r.house.(*plumHouse).update <- load
+		load := &plumLogicalLoad{}
+		load.ID = llid
+		load.house = r.house
+		r.house.Loads = append(r.house.Loads, load)
+		r.house.update <- load
 	}
 	// TODO update scenes
 	r.Name = newRoomState.Name
@@ -413,8 +406,8 @@ type PlumScene struct{}
 
 type plumLogicalLoad struct {
 	libplumraw.LogicalLoad
-	house House
-	room  Room
+	house *plumHouse
+	room  *plumRoom
 	pads  []Lightpad
 }
 
@@ -424,20 +417,24 @@ func (ll *plumLogicalLoad) GetID() string {
 
 func (ll *plumLogicalLoad) Update() error {
 	logrus.WithField("load_id", ll.ID).Debug("getting load")
-	newLogicalLoadState, err := ll.house.(*plumHouse).conn.GetLogicalLoad(ll.ID)
+	if ll.house == nil {
+		return fmt.Errorf("load incomplete; can't yet update")
+	}
+	newLogicalLoadState, err := ll.house.conn.GetLogicalLoad(ll.ID)
 	if err != nil {
 		return err
 	}
 	for _, lpid := range newLogicalLoadState.LPIDs {
-		pad, _ := ll.house.(*plumHouse).getLightpadByID(lpid)
-		if pad != nil {
+		p, _ := ll.house.getLightpadByID(lpid)
+		if p != nil {
+			p.(*plumLightpad).house = ll.house
 			continue
 		}
-		pad = &plumLightpad{}
-		pad.(*plumLightpad).ID = lpid
-		pad.(*plumLightpad).house = ll.house
-		ll.house.(*plumHouse).Pads = append(ll.house.(*plumHouse).Pads, pad)
-		ll.house.(*plumHouse).update <- pad
+		pad := &plumLightpad{}
+		pad.ID = lpid
+		pad.house = ll.house
+		ll.house.Pads = append(ll.house.Pads, pad)
+		ll.house.update <- pad
 	}
 	// TODO update scenes
 	ll.Name = newLogicalLoadState.Name
@@ -449,7 +446,7 @@ func (ll *plumLogicalLoad) Update() error {
 
 func (ll *plumLogicalLoad) GetLightpads() Lightpads { return nil }
 func (ll *plumLogicalLoad) GetLightpadByID(lpid string) (Lightpad, error) {
-	for _, pad := range ll.house.(*plumHouse).Pads {
+	for _, pad := range ll.house.Pads {
 		if pad.GetID() == lpid {
 			return pad, nil
 		}
@@ -458,12 +455,12 @@ func (ll *plumLogicalLoad) GetLightpadByID(lpid string) (Lightpad, error) {
 }
 
 func (ll *plumLogicalLoad) SetLevel(level int) {
-	pad := ll.house.(*plumHouse).getByID(ll.LPIDs[0])
+	pad := ll.house.getByID(ll.LPIDs[0])
 	if pad == nil {
 		logrus.Warn("failed to set level")
 		return
 	}
-	// pad := ll.pads[0].(*plumLightpad)
+	// pad := ll.pads[0]
 	pad.(*plumLightpad).SetLogicalLoadLevel(level)
 }
 func (ll *plumLogicalLoad) GetLevel() int {
@@ -471,18 +468,22 @@ func (ll *plumLogicalLoad) GetLevel() int {
 }
 
 func (ll *plumLogicalLoad) SetTrigger(trigger TriggerFn) {
-	ll.house.(*plumHouse).tLock.Lock()
-	defer ll.house.(*plumHouse).tLock.Unlock()
+	if ll.house == nil {
+		logrus.Warn("trying to set a trigger on a load that's not yet fully initialized")
+		return
+	}
+	ll.house.tLock.Lock()
+	defer ll.house.tLock.Unlock()
 	fmt.Printf("registering trigger %v\n", trigger)
-	ll.house.(*plumHouse).triggers = append(ll.house.(*plumHouse).triggers, trigger)
-	fmt.Printf("triggers are now: %+v\n", ll.house.(*plumHouse).triggers)
+	ll.house.triggers = append(ll.house.triggers, trigger)
+	fmt.Printf("triggers are now: %+v\n", ll.house.triggers)
 }
 func (ll *plumLogicalLoad) ClearTrigger(trigger TriggerFn) {
-	ll.house.(*plumHouse).tLock.Lock()
-	defer ll.house.(*plumHouse).tLock.Unlock()
+	ll.house.tLock.Lock()
+	defer ll.house.tLock.Unlock()
 	// remove the referenced function from the trigger list
-	newTriggers := ll.house.(*plumHouse).triggers[:0]
-	for _, fn := range ll.house.(*plumHouse).triggers {
+	newTriggers := ll.house.triggers[:0]
+	for _, fn := range ll.house.triggers {
 		fmt.Printf("comparing %v to %v\n", fn, trigger)
 		if fn != trigger {
 			newTriggers = append(newTriggers, fn)
@@ -490,15 +491,15 @@ func (ll *plumLogicalLoad) ClearTrigger(trigger TriggerFn) {
 			fmt.Printf("removing %+v from triggers list\n", fn)
 		}
 	}
-	ll.house.(*plumHouse).triggers = newTriggers
-	fmt.Printf("triggers are now: %+v\n", ll.house.(*plumHouse).triggers)
+	ll.house.triggers = newTriggers
+	fmt.Printf("triggers are now: %+v\n", ll.house.triggers)
 }
 
 type plumLightpad struct {
 	libplumraw.DefaultLightpad
 	load  LogicalLoad
 	room  Room
-	house House
+	house *plumHouse
 
 	listenOnce sync.Once
 	// send an empty struct down reconnect every time you want to bounce the
@@ -521,7 +522,7 @@ func (lp *plumLightpad) SetTrigger(TriggerFn) {}
 
 func (lp *plumLightpad) Update() error {
 	logrus.WithField("lightpad_id", lp.ID).Debug("getting lightpad")
-	newLightpadState, err := lp.house.(*plumHouse).conn.GetLightpad(lp.ID)
+	newLightpadState, err := lp.house.conn.GetLightpad(lp.ID)
 	if err != nil {
 		return err
 	}
@@ -565,7 +566,7 @@ func (lp *plumLightpad) Listen() {
 					logrus.WithField("ev", ev).Debug("got event at lightpad")
 					lp.updateState(ev)
 					// also send this event on to the house
-					lp.house.(*plumHouse).events <- ev
+					lp.house.events <- ev
 				}
 			}
 		}()
@@ -586,7 +587,7 @@ func (lp *plumLightpad) listen() {
 		ctx, lp.cancelSubscription = context.WithCancel(context.Background())
 		err := lp.Subscribe(ctx)
 		if err != nil {
-			panic(err)
+			logrus.Error(err)
 		}
 	}
 	go func() {
@@ -601,7 +602,7 @@ func (lp *plumLightpad) listen() {
 				err := lp.Subscribe(ctx)
 				if err != nil {
 					// TODO fix this to make it a recoverable or retryable error
-					panic(err)
+					logrus.Error(err)
 				}
 			}
 		}

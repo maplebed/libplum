@@ -31,15 +31,15 @@ type House interface {
 	// them to the House's state
 	Scan()
 
-	GetRooms() []Room
+	// GetRooms() []Room
 	GetRoomByName(string) (Room, error)
 	GetRoomByID(string) (Room, error)
 
-	GetScenes() []Scene
+	// GetScenes() []Scene
 	GetSceneByName(string) (Scene, error)
 	GetSceneByID(string) (Scene, error)
 
-	GetLoads() []LogicalLoad
+	// GetLoads() []LogicalLoad
 	GetLoadByName(string) (LogicalLoad, error)
 	GetLoadByID(string) (LogicalLoad, error)
 
