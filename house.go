@@ -150,39 +150,8 @@ func (h *plumHouse) Initialize() error {
 	}
 	h.Listen()
 
-	// ip := net.ParseIP("192.168.1.91")
-	// pad := libplumraw.DefaultLightpad{
-	// 	ID:   "8429176c-bf88-4aee-be07-b6a9064cf1ab",
-	// 	LLID: "8aae8c21-f60a-472d-a982-b89a7bb945e9",
-	// 	HAT:  "281babee-bb75-4a96-9de9-48c010089574",
-	// 	IP:   ip,
-	// 	Port: 8443,
-	// }
-	// h.Pads = append(h.Pads, &plumLightpad{pad})
-	// load := libplumraw.LogicalLoad{
-	// 	ID:     "8aae8c21-f60a-472d-a982-b89a7bb945e9",
-	// 	Name:   "Nook",
-	// 	LPIDs:  []string{"8429176c-bf88-4aee-be07-b6a9064cf1ab"},
-	// 	RoomID: "dbb77fae-f027-4377-9f77-d46e0a4a7d49",
-	// }
-	// h.Loads = append(h.Loads, &plumLogicalLoad{h, load, h.Pads})
-
-	// dp := &libplumraw.DefaultLightpad{}
-	// var err error
-	// h.events, err = dp.Subscribe()
-	// if err != nil {
-	// 	return err
-	// }
 	go h.handleEvents()
-	if logrus.GetLevel() <= logrus.DebugLevel {
-		go func() {
-			ticker := time.NewTicker(20 * time.Second).C
-			select {
-			case <-ticker:
-				// spew.Dump(h)
-			}
-		}()
-	}
+
 	return nil
 }
 
@@ -364,6 +333,28 @@ func (h *plumHouse) GetStream() chan StreamEvent {
 	return make(chan StreamEvent)
 }
 
+// SetTrigger on a house will fire when any lightpad in the house emits an event
+func (h *plumHouse) SetTrigger(trigger TriggerFn) {
+	logrus.WithField("triggerFn", trigger).Debug("registering trigger on house")
+	h.tLock.Lock()
+	defer h.tLock.Unlock()
+	h.triggers = append(h.triggers, trigger)
+}
+func (h *plumHouse) ClearTrigger(trigger TriggerFn) {
+	h.tLock.Lock()
+	defer h.tLock.Unlock()
+	// remove the referenced function from the trigger list
+	newTriggers := h.triggers[:0]
+	for _, fn := range h.triggers {
+		if fn != trigger {
+			newTriggers = append(newTriggers, fn)
+		} else {
+			logrus.WithField("triggerFn", trigger).Debug("clearing trigger off house")
+		}
+	}
+	h.triggers = newTriggers
+}
+
 type plumRoom struct {
 	libplumraw.Room
 	house *plumHouse
@@ -409,6 +400,10 @@ type plumLogicalLoad struct {
 	house *plumHouse
 	room  *plumRoom
 	pads  []Lightpad
+
+	events   chan libplumraw.Event
+	triggers []TriggerFn
+	tLock    sync.Mutex
 }
 
 func (ll *plumLogicalLoad) GetID() string {
@@ -416,6 +411,10 @@ func (ll *plumLogicalLoad) GetID() string {
 }
 
 func (ll *plumLogicalLoad) Update() error {
+	if ll.events == nil {
+		ll.events = make(chan libplumraw.Event, 10)
+		go ll.handleEvents()
+	}
 	logrus.WithField("load_id", ll.ID).Debug("getting load")
 	if ll.house == nil {
 		return fmt.Errorf("load incomplete; can't yet update")
@@ -442,6 +441,14 @@ func (ll *plumLogicalLoad) Update() error {
 	ll.RoomID = newLogicalLoadState.RoomID
 	ll.ID = newLogicalLoadState.ID
 	return nil
+}
+
+func (ll *plumLogicalLoad) handleEvents() {
+	for ev := range ll.events {
+		for _, f := range ll.triggers {
+			go (*f)(ev)
+		}
+	}
 }
 
 func (ll *plumLogicalLoad) GetLightpads() Lightpads { return nil }
@@ -472,11 +479,10 @@ func (ll *plumLogicalLoad) SetTrigger(trigger TriggerFn) {
 		logrus.Warn("trying to set a trigger on a load that's not yet fully initialized")
 		return
 	}
-	ll.house.tLock.Lock()
-	defer ll.house.tLock.Unlock()
-	fmt.Printf("registering trigger %v\n", trigger)
-	ll.house.triggers = append(ll.house.triggers, trigger)
-	fmt.Printf("triggers are now: %+v\n", ll.house.triggers)
+	logrus.WithField("triggerFn", trigger).Debug("registering trigger on load")
+	ll.tLock.Lock()
+	defer ll.tLock.Unlock()
+	ll.triggers = append(ll.triggers, trigger)
 }
 func (ll *plumLogicalLoad) ClearTrigger(trigger TriggerFn) {
 	ll.house.tLock.Lock()
@@ -484,21 +490,18 @@ func (ll *plumLogicalLoad) ClearTrigger(trigger TriggerFn) {
 	// remove the referenced function from the trigger list
 	newTriggers := ll.house.triggers[:0]
 	for _, fn := range ll.house.triggers {
-		fmt.Printf("comparing %v to %v\n", fn, trigger)
 		if fn != trigger {
 			newTriggers = append(newTriggers, fn)
 		} else {
-			fmt.Printf("removing %+v from triggers list\n", fn)
+			logrus.WithField("triggerFn", trigger).Debug("clearing trigger")
 		}
 	}
 	ll.house.triggers = newTriggers
-	fmt.Printf("triggers are now: %+v\n", ll.house.triggers)
 }
 
 type plumLightpad struct {
 	libplumraw.DefaultLightpad
-	load  LogicalLoad
-	room  Room
+	load  *plumLogicalLoad
 	house *plumHouse
 
 	listenOnce sync.Once
@@ -508,6 +511,9 @@ type plumLightpad struct {
 	reconnect chan struct{}
 
 	cancelSubscription context.CancelFunc
+
+	triggers []TriggerFn
+	tLock    sync.Mutex
 }
 
 func (lp *plumLightpad) GetID() string {
@@ -517,8 +523,6 @@ func (lp *plumLightpad) GetID() string {
 func (lp *plumLightpad) SetGlow(libplumraw.ForceGlow) {
 	return
 }
-
-func (lp *plumLightpad) SetTrigger(TriggerFn) {}
 
 func (lp *plumLightpad) Update() error {
 	logrus.WithField("lightpad_id", lp.ID).Debug("getting lightpad")
@@ -565,7 +569,9 @@ func (lp *plumLightpad) Listen() {
 				case ev := <-lp.StateChanges:
 					logrus.WithField("ev", ev).Debug("got event at lightpad")
 					lp.updateState(ev)
-					// also send this event on to the house
+					// send this event to the lightpad, the load, and the house
+					go lp.handleEvent(ev)
+					lp.load.events <- ev
 					lp.house.events <- ev
 				}
 			}
@@ -621,5 +627,33 @@ func (lp *plumLightpad) updateState(ev libplumraw.Event) {
 		// TODO update lightpad and load config
 	case libplumraw.LPEUnknown:
 		fmt.Printf("caught unkwnown lightpad event %+v\n", ev)
+	}
+}
+
+// SetTrigger on a lightpad will only fire when this lightpad emits an event
+func (lp *plumLightpad) SetTrigger(trigger TriggerFn) {
+	logrus.WithField("triggerFn", trigger).Debug("registering trigger on lighpad")
+	lp.tLock.Lock()
+	defer lp.tLock.Unlock()
+	lp.triggers = append(lp.triggers, trigger)
+}
+func (lp *plumLightpad) ClearTrigger(trigger TriggerFn) {
+	lp.tLock.Lock()
+	defer lp.tLock.Unlock()
+	// remove the referenced function from the trigger list
+	newTriggers := lp.triggers[:0]
+	for _, fn := range lp.triggers {
+		if fn != trigger {
+			newTriggers = append(newTriggers, fn)
+		} else {
+			logrus.WithField("triggerFn", trigger).Debug("clearing trigger off lightpad")
+		}
+	}
+	lp.triggers = newTriggers
+}
+
+func (lp *plumLightpad) handleEvent(ev libplumraw.Event) {
+	for _, f := range lp.triggers {
+		go (*f)(ev)
 	}
 }

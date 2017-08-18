@@ -31,6 +31,11 @@ type House interface {
 	// them to the House's state
 	Scan()
 
+	// SetTrigger on a house allows you to establish actions that should happen
+	// whenever any light whithin the house emits an event
+	SetTrigger(TriggerFn)
+	ClearTrigger(TriggerFn)
+
 	// GetRooms() []Room
 	GetRoomByName(string) (Room, error)
 	GetRoomByID(string) (Room, error)
@@ -63,6 +68,8 @@ type LogicalLoad interface {
 	SetLevel(int)
 	GetLevel() int
 
+	// SetTrigger on a load will only fire when a lightpad in this load emits an
+	// event
 	SetTrigger(TriggerFn)
 	ClearTrigger(TriggerFn)
 
@@ -76,7 +83,10 @@ type Lightpads []Lightpad
 type Lightpad interface {
 	GetID() string
 	SetGlow(libplumraw.ForceGlow)
+
+	// SetTrigger on a lightpad will only fire if this lightpad emits an event
 	SetTrigger(TriggerFn)
+	ClearTrigger(TriggerFn)
 
 	Update() error
 	Listen()
