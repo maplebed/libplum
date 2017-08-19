@@ -427,10 +427,12 @@ func (ll *plumLogicalLoad) Update() error {
 		p, _ := ll.house.getLightpadByID(lpid)
 		if p != nil {
 			p.(*plumLightpad).house = ll.house
+			p.(*plumLightpad).load = ll
 			continue
 		}
 		pad := &plumLightpad{}
 		pad.ID = lpid
+		pad.load = ll
 		pad.house = ll.house
 		ll.house.Pads = append(ll.house.Pads, pad)
 		ll.house.update <- pad
@@ -451,7 +453,18 @@ func (ll *plumLogicalLoad) handleEvents() {
 	}
 }
 
-func (ll *plumLogicalLoad) GetLightpads() Lightpads { return nil }
+func (ll *plumLogicalLoad) GetLightpads() Lightpads {
+	pads := make(Lightpads, len(ll.LPIDs))
+	for _, id := range ll.LPIDs {
+		pad, err := ll.house.getLightpadByID(id)
+		if err != nil {
+			continue
+		}
+		pads = append(pads, pad)
+	}
+	return pads
+}
+
 func (ll *plumLogicalLoad) GetLightpadByID(lpid string) (Lightpad, error) {
 	for _, pad := range ll.house.Pads {
 		if pad.GetID() == lpid {
@@ -518,6 +531,9 @@ type plumLightpad struct {
 
 func (lp *plumLightpad) GetID() string {
 	return lp.ID
+}
+func (lp *plumLightpad) GetLoadID() string {
+	return lp.load.ID
 }
 
 func (lp *plumLightpad) SetGlow(libplumraw.ForceGlow) {

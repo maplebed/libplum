@@ -82,6 +82,7 @@ type LogicalLoad interface {
 type Lightpads []Lightpad
 type Lightpad interface {
 	GetID() string
+	GetLoadID() string
 	SetGlow(libplumraw.ForceGlow)
 
 	// SetTrigger on a lightpad will only fire if this lightpad emits an event
